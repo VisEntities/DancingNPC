@@ -13,7 +13,7 @@ using UnityEngine;
 namespace Oxide.Plugins
 {
     [Info("Dancing NPC", "VisEntities", "1.0.0")]
-    [Description(" ")]
+    [Description("Allows players to spawn an npc that performs various dance gestures.")]
     public class DancingNPC : RustPlugin
     {
         #region Fields
@@ -24,7 +24,7 @@ namespace Oxide.Plugins
         private const int LAYER_PLAYERS = Layers.Mask.Player_Server;
         private const string PREFAB_PLAYER = "assets/prefabs/player/player.prefab";
 
-        private Dictionary<BasePlayer, Timer> npcTimers = new Dictionary<BasePlayer, Timer>();
+        private Dictionary<BasePlayer, Timer> _npcTimers = new Dictionary<BasePlayer, Timer>();
 
         #endregion Fields
 
@@ -106,7 +106,7 @@ namespace Oxide.Plugins
 
         private void Unload()
         {
-            KillSpawnedNPCAndTimers();
+            CleanupSpawnedNPCAndTimers();
             _config = null;
             _plugin = null;
         }
@@ -191,7 +191,7 @@ namespace Oxide.Plugins
             if (Physics.Raycast(player.eyes.HeadRay(), out raycastHit, 10f, LAYER_PLAYERS, QueryTriggerInteraction.Ignore))
             {
                 BasePlayer targetNPC = raycastHit.GetEntity() as BasePlayer;
-                if (targetNPC != null && npcTimers.ContainsKey(targetNPC))
+                if (targetNPC != null && _npcTimers.ContainsKey(targetNPC))
                 {
                     return targetNPC;
                 }
@@ -205,7 +205,7 @@ namespace Oxide.Plugins
             BasePlayer npc = GameManager.server.CreateEntity(PREFAB_PLAYER, ownerPlayer.transform.position) as BasePlayer;
             npc.Spawn();
 
-            npcTimers.Add(npc, null);
+            _npcTimers.Add(npc, null);
             return npc;
         }
 
@@ -216,7 +216,7 @@ namespace Oxide.Plugins
         private void UpdateNPCGesture(BasePlayer npc, GestureConfig gestureConfig)
         {
             Timer existingTimer;
-            if (npcTimers.TryGetValue(npc, out existingTimer) && existingTimer != null)
+            if (_npcTimers.TryGetValue(npc, out existingTimer) && existingTimer != null)
                 existingTimer.Destroy();
 
             StartGestureLoop(npc, gestureConfig);
@@ -232,7 +232,7 @@ namespace Oxide.Plugins
                     npc.Server_StartGesture(gestureConfig);
             });
 
-            npcTimers[npc] = gestureRepeatTimer;
+            _npcTimers[npc] = gestureRepeatTimer;
         }
 
         private string GetRandomGesture()
@@ -260,9 +260,9 @@ namespace Oxide.Plugins
 
         #region NPC and Timers Cleanup
 
-        private void KillSpawnedNPCAndTimers()
+        private void CleanupSpawnedNPCAndTimers()
         {
-            foreach (var kvp in npcTimers)
+            foreach (var kvp in _npcTimers)
             {
                 BasePlayer npc = kvp.Key;
                 Timer timer = kvp.Value;
@@ -274,7 +274,7 @@ namespace Oxide.Plugins
                     timer.Destroy();
             }
 
-            npcTimers.Clear();
+            _npcTimers.Clear();
         }
 
         #endregion NPC and Timers Cleanup
