@@ -8,11 +8,13 @@ using Newtonsoft.Json;
 using Rust;
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using UnityEngine;
+using Random = UnityEngine.Random;
 
 namespace Oxide.Plugins
 {
-    [Info("Dancing NPC", "VisEntities", "1.0.0")]
+    [Info("Dancing NPC", "VisEntities", "1.1.0")]
     [Description("Allows players to spawn an npc that performs various dance gestures.")]
     public class DancingNPC : RustPlugin
     {
@@ -40,6 +42,52 @@ namespace Oxide.Plugins
 
             [JsonProperty("Gestures")]
             public List<string> Gestures { get; set; }
+
+            [JsonProperty("Loadouts")]
+            public Dictionary<string, LoadoutConfig> Loadouts { get; set; }
+        }
+
+        private class LoadoutConfig
+        {
+            [JsonProperty("Wear Items")]
+            public List<ItemInfo> WearItems { get; set; }
+
+            [JsonIgnore]
+            public PlayerInventoryProperties InventoryProperties { get; set; }
+            
+            public void CreateLoadout()
+            {
+                InventoryProperties = ScriptableObject.CreateInstance<PlayerInventoryProperties>();
+                InventoryProperties.wear = new List<PlayerInventoryProperties.ItemAmountSkinned>();
+                InventoryProperties.main = new List<PlayerInventoryProperties.ItemAmountSkinned>();
+                InventoryProperties.belt = new List<PlayerInventoryProperties.ItemAmountSkinned>();
+
+                foreach (ItemInfo itemInfo in WearItems)
+                {
+                    ItemDefinition itemDef = ItemManager.FindItemDefinition(itemInfo.ShortName);
+                    if (itemDef != null)
+                    {
+                        InventoryProperties.wear.Add(new PlayerInventoryProperties.ItemAmountSkinned
+                        {
+                            itemDef = itemDef,
+                            amount = itemInfo.Amount,
+                            skinOverride = itemInfo.SkinId
+                        });
+                    }
+                }
+            }
+        }
+
+        public class ItemInfo
+        {
+            [JsonProperty("Short Name")]
+            public string ShortName { get; set; }
+
+            [JsonProperty("Skin Id")]
+            public ulong SkinId { get; set; }
+
+            [JsonProperty("Amount")]
+            public int Amount { get; set; }
         }
 
         protected override void LoadConfig()
@@ -72,6 +120,11 @@ namespace Oxide.Plugins
             if (string.Compare(_config.Version, "1.0.0") < 0)
                 _config = defaultConfig;
 
+            if (string.Compare(_config.Version, "1.1.0") < 0)
+            {
+                _config.Loadouts = defaultConfig.Loadouts;
+            }
+
             PrintWarning("Config update complete! Updated from version " + _config.Version + " to " + Version.ToString());
             _config.Version = Version.ToString();
         }
@@ -88,6 +141,37 @@ namespace Oxide.Plugins
                     "victory",
                     "wave",
                     "cabbagepatch"
+                },
+                Loadouts = new Dictionary<string, LoadoutConfig>
+                {
+                    {
+                        "Hazmat", new LoadoutConfig
+                        {
+                            WearItems = new List<ItemInfo>
+                            {
+                                new ItemInfo
+                                {
+                                    ShortName = "hazmatsuit",
+                                    SkinId = 0,
+                                    Amount = 1
+                                },
+                            }
+                        }
+                    },
+                    {
+                        "Egg", new LoadoutConfig
+                        {
+                            WearItems = new List<ItemInfo>
+                            {
+                                new ItemInfo
+                                {
+                                    ShortName = "attire.egg.suit",
+                                    SkinId = 0,
+                                    Amount = 1
+                                },
+                            }
+                        }
+                    }
                 }
             };
         }
@@ -101,7 +185,11 @@ namespace Oxide.Plugins
             _plugin = this;
             PermissionUtil.RegisterPermissions();
             cmd.AddChatCommand(_config.ChatCommand, this, nameof(cmdDance));
-
+            
+            foreach (LoadoutConfig loadout in _config.Loadouts.Values)
+            {
+                loadout.CreateLoadout();
+            }
         }
 
         private void Unload()
@@ -158,6 +246,19 @@ namespace Oxide.Plugins
             else
                 gestureName = GetRandomGesture();
 
+            string loadoutName;
+            if (args.Length > 1)
+                loadoutName = args[1];
+            else
+                loadoutName = GetRandomLoadout();
+
+            LoadoutConfig selectedLoadout;
+            if (!_config.Loadouts.TryGetValue(loadoutName.ToLower(), out selectedLoadout))
+            {
+                SendMessage(player, Lang.LoadoutNotFound, loadoutName);
+                return;
+            }
+
             GestureConfig gestureConfig = FindGestureByName(player, gestureName);
 
             if (gestureConfig != null)
@@ -166,13 +267,15 @@ namespace Oxide.Plugins
                 if (targetNPC != null)
                 {
                     UpdateNPCGesture(targetNPC, gestureConfig);
-                    SendMessage(player, Lang.GestureUpdatedOnExistingNPC, gestureName);
+                    EquipLoadout(targetNPC, selectedLoadout);
+                    SendMessage(player, Lang.GestureUpdatedOnExistingNPC, gestureName, loadoutName);
                 }
                 else
                 {
                     targetNPC = SpawnNPC(player);
+                    EquipLoadout(targetNPC, selectedLoadout);
                     StartGestureLoop(targetNPC, gestureConfig);
-                    SendMessage(player, Lang.GesturePlayedOnNewNPC, gestureName);
+                    SendMessage(player, Lang.GesturePlayedOnNewNPC, gestureName, loadoutName);
                 }
             }
             else
@@ -279,6 +382,37 @@ namespace Oxide.Plugins
 
         #endregion NPC and Timers Cleanup
 
+        #region NPC Loadout
+        
+        private string GetRandomLoadout()
+        {
+            int index = Random.Range(0, _config.Loadouts.Count);
+            return _config.Loadouts.Keys.ElementAt(index);
+        }
+
+        private void EquipLoadout(BasePlayer npc, LoadoutConfig loadout)
+        {
+            if (loadout.InventoryProperties != null)
+            {
+                StripInventory(npc);
+                loadout.InventoryProperties.GiveToPlayer(npc);
+            }
+        }
+
+        public static void StripInventory(BasePlayer npc)
+        {
+            Item[] allItems = npc.inventory.AllItems();
+
+            for (int i = allItems.Length - 1; i >= 0; i--)
+            {
+                Item item = allItems[i];
+                item.RemoveFromContainer();
+                item.Remove();
+            }
+        }
+
+        #endregion NPC Loadout
+
         #region Localization
 
         private class Lang
@@ -287,6 +421,7 @@ namespace Oxide.Plugins
             public const string GesturePlayedOnNewNPC = "GesturePlayedOnNewNPC";
             public const string GestureUpdatedOnExistingNPC = "GestureUpdatedOnExistingNPC";
             public const string GestureNotFound = "GestureNotFound";
+            public const string LoadoutNotFound = "LoadoutNotFound";
         }
 
         protected override void LoadDefaultMessages()
@@ -296,7 +431,8 @@ namespace Oxide.Plugins
                 [Lang.NoPermission] = "You do not have permission to use this command.",
                 [Lang.GesturePlayedOnNewNPC] = "Spawned a new NPC and played gesture <color=#ADFF2F>{0}</color>.",
                 [Lang.GestureUpdatedOnExistingNPC] = "Updated gesture to <color=#ADFF2F>{0}</color> on the existing NPC.",
-                [Lang.GestureNotFound] = "Gesture <color=#ADFF2F>{0}</color> not found. Please specify a valid gesture."
+                [Lang.GestureNotFound] = "Gesture <color=#ADFF2F>{0}</color> not found. Please specify a valid gesture.",
+                [Lang.LoadoutNotFound] = "Loadout <color=#ADFF2F>{0}</color> not found. Please specify a valid loadout."
             }, this, "en");
         }
 
