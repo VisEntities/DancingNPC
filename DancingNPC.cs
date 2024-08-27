@@ -14,7 +14,7 @@ using Random = UnityEngine.Random;
 
 namespace Oxide.Plugins
 {
-    [Info("Dancing NPC", "VisEntities", "1.1.0")]
+    [Info("Dancing NPC", "VisEntities", "1.1.1")]
     [Description("Allows players to spawn an npc that performs various dance gestures.")]
     public class DancingNPC : RustPlugin
     {
@@ -145,7 +145,7 @@ namespace Oxide.Plugins
                 Loadouts = new Dictionary<string, LoadoutConfig>
                 {
                     {
-                        "Hazmat", new LoadoutConfig
+                        "hazmat", new LoadoutConfig
                         {
                             WearItems = new List<ItemInfo>
                             {
@@ -159,7 +159,7 @@ namespace Oxide.Plugins
                         }
                     },
                     {
-                        "Egg", new LoadoutConfig
+                        "egg", new LoadoutConfig
                         {
                             WearItems = new List<ItemInfo>
                             {
@@ -252,8 +252,11 @@ namespace Oxide.Plugins
             else
                 loadoutName = GetRandomLoadout();
 
-            LoadoutConfig selectedLoadout;
-            if (!_config.Loadouts.TryGetValue(loadoutName.ToLower(), out selectedLoadout))
+            LoadoutConfig selectedLoadout = _config.Loadouts
+                .FirstOrDefault(l => string.Equals(l.Key, loadoutName, StringComparison.OrdinalIgnoreCase))
+                .Value;
+
+            if (selectedLoadout == null)
             {
                 SendMessage(player, Lang.LoadoutNotFound, loadoutName);
                 return;
