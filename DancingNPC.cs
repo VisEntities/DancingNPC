@@ -4,6 +4,7 @@
  * Full legal terms can be found at https://game4freak.io/eula/
  */
 
+using Facepunch;
 using Newtonsoft.Json;
 using Rust;
 using System;
@@ -14,7 +15,7 @@ using Random = UnityEngine.Random;
 
 namespace Oxide.Plugins
 {
-    [Info("Dancing NPC", "VisEntities", "1.1.1")]
+    [Info("Dancing NPC", "VisEntities", "1.1.2")]
     [Description("Allows players to spawn an npc that performs various dance gestures.")]
     public class DancingNPC : RustPlugin
     {
@@ -404,14 +405,17 @@ namespace Oxide.Plugins
 
         public static void StripInventory(BasePlayer npc)
         {
-            Item[] allItems = npc.inventory.AllItems();
+            List<Item> allItems = Pool.Get<List<Item>>();
+            npc.inventory.GetAllItems(allItems);
 
-            for (int i = allItems.Length - 1; i >= 0; i--)
+            for (int i = allItems.Count - 1; i >= 0; i--)
             {
                 Item item = allItems[i];
                 item.RemoveFromContainer();
                 item.Remove();
             }
+
+            Pool.FreeUnmanaged(ref allItems);
         }
 
         #endregion NPC Loadout
