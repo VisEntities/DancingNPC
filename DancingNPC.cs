@@ -14,7 +14,7 @@ using Random = UnityEngine.Random;
 
 namespace Oxide.Plugins
 {
-    [Info("Dancing NPC", "VisEntities", "1.2.0")]
+    [Info("Dancing NPC", "VisEntities", "1.3.0")]
     [Description("Allows players to spawn an npc that performs various dance gestures.")]
     public class DancingNPC : RustPlugin
     {
@@ -199,7 +199,9 @@ namespace Oxide.Plugins
                 if (targetNPC != null)
                 {
                     UpdateNPCGesture(targetNPC, gestureConfig);
+                    SetNPCFacingDirection(targetNPC, player);
                     EquipGearSet(targetNPC, gearSetName);
+
                     SendMessage(player, Lang.GestureUpdatedOnExistingNPC, gestureName, gearSetName);
                 }
                 else
@@ -207,6 +209,8 @@ namespace Oxide.Plugins
                     targetNPC = SpawnNPC(player);
                     EquipGearSet(targetNPC, gearSetName);
                     StartGestureLoop(targetNPC, gestureConfig);
+                    SetNPCFacingDirection(targetNPC, player);
+
                     SendMessage(player, Lang.GesturePlayedOnNewNPC, gestureName, gearSetName);
                 }
             }
@@ -242,6 +246,13 @@ namespace Oxide.Plugins
 
             _npcTimers.Add(npc, null);
             return npc;
+        }
+        
+        private void SetNPCFacingDirection(BasePlayer npc, BasePlayer player)
+        {
+            Vector3 directionToPlayer = (player.transform.position - npc.transform.position).normalized;
+            npc.OverrideViewAngles(Quaternion.LookRotation(directionToPlayer).eulerAngles);
+            npc.SendNetworkUpdateImmediate();
         }
 
         #endregion NPC Spawning and Retrieval
