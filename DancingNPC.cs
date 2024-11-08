@@ -10,11 +10,10 @@ using Rust;
 using System;
 using System.Collections.Generic;
 using UnityEngine;
-using Random = UnityEngine.Random;
 
 namespace Oxide.Plugins
 {
-    [Info("Dancing NPC", "VisEntities", "1.3.0")]
+    [Info("Dancing NPC", "VisEntities", "1.3.1")]
     [Description("Allows players to spawn an npc that performs various dance gestures.")]
     public class DancingNPC : RustPlugin
     {
@@ -169,7 +168,7 @@ namespace Oxide.Plugins
 
             if (!PermissionUtil.HasPermission(player, PermissionUtil.USE))
             {
-                SendMessage(player, Lang.NoPermission);
+                MessagePlayer(player, Lang.NoPermission);
                 return;
             }
 
@@ -179,44 +178,51 @@ namespace Oxide.Plugins
             else
                 gestureName = GetRandomGesture();
 
-            string gearSetName;
-            if (args.Length > 1)
-                gearSetName = args[1];
-            else
-                gearSetName = GetRandomGearSet();
+            GestureConfig gestureConfig = FindGestureByName(gestureName);
 
-            if (!GearSetExists(gearSetName))
+            string gearSetName;
+            bool gearSetExists = false;
+            if (args.Length > 1)
             {
-                SendMessage(player, Lang.GearSetNotFound, gearSetName);
-                return;
+                gearSetName = args[1];
+                gearSetExists = GearSetExists(gearSetName);
+            }
+            else
+            {
+                gearSetName = GetRandomGearSet();
+                gearSetExists = gearSetName != null && GearSetExists(gearSetName);
             }
 
-            GestureConfig gestureConfig = FindGestureByName(player, gestureName);
-
-            if (gestureConfig != null)
+            BasePlayer targetNPC = GetNPCInSight(player);
+            if (targetNPC != null)
             {
-                BasePlayer targetNPC = GetNPCInSight(player);
-                if (targetNPC != null)
+                if (gestureConfig != null)
                 {
                     UpdateNPCGesture(targetNPC, gestureConfig);
-                    SetNPCFacingDirection(targetNPC, player);
-                    EquipGearSet(targetNPC, gearSetName);
-
-                    SendMessage(player, Lang.GestureUpdatedOnExistingNPC, gestureName, gearSetName);
+                    MessagePlayer(player, Lang.GestureUpdatedOnExistingNPC, gestureName);
                 }
                 else
-                {
-                    targetNPC = SpawnNPC(player);
-                    EquipGearSet(targetNPC, gearSetName);
-                    StartGestureLoop(targetNPC, gestureConfig);
-                    SetNPCFacingDirection(targetNPC, player);
+                    MessagePlayer(player, Lang.GestureNotFound, gestureName);
 
-                    SendMessage(player, Lang.GesturePlayedOnNewNPC, gestureName, gearSetName);
-                }
+                EquipGearSet(targetNPC, gearSetName);
+                SetNPCFacingDirection(targetNPC, player);
             }
             else
             {
-                SendMessage(player, Lang.GestureNotFound, gestureName);
+                if (gestureConfig != null)
+                {
+                    targetNPC = SpawnNPC(player);
+                    timer.Once(1f, () =>
+                    {
+                        SetNPCFacingDirection(targetNPC, player);
+                    });
+
+                    EquipGearSet(targetNPC, gearSetName);
+                    StartGestureLoop(targetNPC, gestureConfig);
+                    MessagePlayer(player, Lang.GesturePlayedOnNewNPC, gestureName);
+                }
+                else
+                    MessagePlayer(player, Lang.GestureNotFound, gestureName);
             }
         }
 
@@ -287,9 +293,9 @@ namespace Oxide.Plugins
             return _config.Gestures[index];
         }
 
-        private GestureConfig FindGestureByName(BasePlayer player, string gestureName)
+        private GestureConfig FindGestureByName(string gestureName)
         {
-            GestureConfig[] allGestures = player.gestureList.AllGestures;
+            GestureConfig[] allGestures = GestureCollection.Instance.AllGestures;
             if (allGestures != null)
             {
                 foreach (GestureConfig gesture in allGestures)
@@ -345,13 +351,31 @@ namespace Oxide.Plugins
 
         private string GetRandomGearSet()
         {
-            int index = Random.Range(0, _config.GearSets.Count);
+            if (_config.GearSets.Count == 0)
+                return null;
+
+            int index = UnityEngine.Random.Range(0, _config.GearSets.Count);
             return _config.GearSets[index];
         }
 
         #endregion Gear Set Equipping
 
         #region Helper Functions
+
+        private bool CheckDependencies(bool unloadIfNotFound = false)
+        {
+            if (!PluginLoaded(GearCore))
+            {
+                Puts("Gear Core is not loaded. Download it from https://game4freak.io.");
+
+                if (unloadIfNotFound)
+                    rust.RunServerCommand("oxide.unload", nameof(DancingNPC));
+
+                return false;
+            }
+
+            return true;
+        }
 
         public static bool PluginLoaded(Plugin plugin)
         {
@@ -371,7 +395,6 @@ namespace Oxide.Plugins
             public const string GesturePlayedOnNewNPC = "GesturePlayedOnNewNPC";
             public const string GestureUpdatedOnExistingNPC = "GestureUpdatedOnExistingNPC";
             public const string GestureNotFound = "GestureNotFound";
-            public const string GearSetNotFound = "GearSetNotFound";
         }
 
         protected override void LoadDefaultMessages()
@@ -379,20 +402,26 @@ namespace Oxide.Plugins
             lang.RegisterMessages(new Dictionary<string, string>
             {
                 [Lang.NoPermission] = "You do not have permission to use this command.",
-                [Lang.GesturePlayedOnNewNPC] = "Spawned a new npc and played gesture <color=#ADFF2F>{0}</color> with gear set <color=#ADFF2F>{1}</color>.",
-                [Lang.GestureUpdatedOnExistingNPC] = "Updated gesture to <color=#ADFF2F>{0}</color> on the existing npc with gear set <color=#ADFF2F>{1}</color>.",
-                [Lang.GestureNotFound] = "Gesture <color=#ADFF2F>{0}</color> not found. Please specify a valid gesture.",
-                [Lang.GearSetNotFound] = "Gear set <color=#ADFF2F>{0}</color> not found. Please specify a valid gear set."
+                [Lang.GesturePlayedOnNewNPC] = "Spawned a new npc and played gesture <color=#CACF52>{0}</color>.",
+                [Lang.GestureUpdatedOnExistingNPC] = "Updated gesture to <color=#CACF52>{0}</color> on the existing npc.",
+                [Lang.GestureNotFound] = "Gesture <color=#75A838>{0}</color> not found. Please specify a valid gesture.",
             }, this, "en");
         }
 
-        private void SendMessage(BasePlayer player, string messageKey, params object[] args)
+        private static string GetMessage(BasePlayer player, string messageKey, params object[] args)
         {
-            string message = lang.GetMessage(messageKey, this, player.UserIDString);
+            string message = _plugin.lang.GetMessage(messageKey, _plugin, player.UserIDString);
+
             if (args.Length > 0)
                 message = string.Format(message, args);
 
-            SendReply(player, message);
+            return message;
+        }
+
+        public static void MessagePlayer(BasePlayer player, string messageKey, params object[] args)
+        {
+            string message = GetMessage(player, messageKey, args);
+            _plugin.SendReply(player, message);
         }
 
         #endregion Localization
