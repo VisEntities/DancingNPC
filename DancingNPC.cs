@@ -122,8 +122,8 @@ namespace Oxide.Plugins
 
         private class StoredData
         {
-            [JsonProperty("Npcs")]
-            public List<NPCData> Npcs { get; set; } = new List<NPCData>();
+            [JsonProperty("Player Npcs")]
+            public Dictionary<ulong, List<NPCData>> PlayerNpcs { get; set; } = new Dictionary<ulong, List<NPCData>>();
         }
 
         private class NPCData
@@ -175,8 +175,8 @@ namespace Oxide.Plugins
             if (_storedData == null)
                 _storedData = new StoredData();
 
-            if (_storedData.Npcs == null)
-                _storedData.Npcs = new List<NPCData>();
+            if (_storedData.PlayerNpcs == null)
+                _storedData.PlayerNpcs = new Dictionary<ulong, List<NPCData>>();
         }
 
         private void SaveData()
@@ -186,37 +186,49 @@ namespace Oxide.Plugins
 
         private void RespawnSavedNpcs()
         {
-            if (_storedData == null || _storedData.Npcs == null || _storedData.Npcs.Count == 0)
+            if (_storedData == null || _storedData.PlayerNpcs == null || _storedData.PlayerNpcs.Count == 0)
                 return;
 
-            for (int i = 0; i < _storedData.Npcs.Count; i++)
+            foreach (KeyValuePair<ulong, List<NPCData>> playerEntry in _storedData.PlayerNpcs)
             {
-                NPCData npcData = _storedData.Npcs[i];
-                if (npcData == null || npcData.Position == null)
+                ulong ownerId = playerEntry.Key;
+                List<NPCData> npcList = playerEntry.Value;
+
+                if (npcList == null || npcList.Count == 0)
                     continue;
 
-                Vector3 position = npcData.Position.ToVector3();
-
-                BasePlayer npc = GameManager.server.CreateEntity(PREFAB_PLAYER, position) as BasePlayer;
-                if (npc == null)
-                    continue;
-
-                npc.Spawn();
-
-                _npcGestureLoopTimers[npc] = null;
-                _spawnedNpcs[npc] = npcData;
-
-                if (!float.IsNaN(npcData.Yaw))
-                    SetNPCYaw(npc, npcData.Yaw);
-
-                if (!string.IsNullOrEmpty(npcData.GearSetName))
-                    GearCoreUtil.EquipGearSet(npc, npcData.GearSetName);
-
-                if (!string.IsNullOrEmpty(npcData.GestureName))
+                for (int i = 0; i < npcList.Count; i++)
                 {
-                    GestureConfig gestureConfig = FindGestureByName(npcData.GestureName);
-                    if (gestureConfig != null)
-                        BeginGestureLoop(npc, gestureConfig);
+                    NPCData npcData = npcList[i];
+                    if (npcData == null || npcData.Position == null)
+                        continue;
+
+                    if (npcData.OwnerId == 0)
+                        npcData.OwnerId = ownerId;
+
+                    Vector3 position = npcData.Position.ToVector3();
+
+                    BasePlayer npc = GameManager.server.CreateEntity(PREFAB_PLAYER, position) as BasePlayer;
+                    if (npc == null)
+                        continue;
+
+                    npc.Spawn();
+
+                    _npcGestureLoopTimers[npc] = null;
+                    _spawnedNpcs[npc] = npcData;
+
+                    if (!float.IsNaN(npcData.Yaw))
+                        SetNPCYaw(npc, npcData.Yaw);
+
+                    if (!string.IsNullOrEmpty(npcData.GearSetName))
+                        GearCoreUtil.EquipGearSet(npc, npcData.GearSetName);
+
+                    if (!string.IsNullOrEmpty(npcData.GestureName))
+                    {
+                        GestureConfig gestureConfig = FindGestureByName(npcData.GestureName);
+                        if (gestureConfig != null)
+                            BeginGestureLoop(npc, gestureConfig);
+                    }
                 }
             }
         }
@@ -262,10 +274,18 @@ namespace Oxide.Plugins
                 _npcGestureLoopTimers.Remove(npcPlayer);
             }
 
-            if (_storedData != null && _storedData.Npcs != null)
+            if (_storedData != null && _storedData.PlayerNpcs != null && npcData.OwnerId != 0)
             {
-                _storedData.Npcs.Remove(npcData);
-                SaveData();
+                List<NPCData> playerNpcList;
+                if (_storedData.PlayerNpcs.TryGetValue(npcData.OwnerId, out playerNpcList) && playerNpcList != null)
+                {
+                    playerNpcList.Remove(npcData);
+
+                    if (playerNpcList.Count == 0)
+                        _storedData.PlayerNpcs.Remove(npcData.OwnerId);
+
+                    SaveData();
+                }
             }
 
             _spawnedNpcs.Remove(npcPlayer);
@@ -436,7 +456,7 @@ namespace Oxide.Plugins
                 int currentCount = GetPlayerDancingNpcCount(player);
                 if (currentCount >= _config.MaximumDancersPerPlayer)
                 {
-                    ReplyToPlayer(player, Lang.Error_MaxDancingNPCsReached, _config.MaximumDancersPerPlayer);
+                    ReplyToPlayer(player, Lang.Error_MaximumDancingNpcsReached, _config.MaximumDancersPerPlayer);
                     return;
                 }
             }
@@ -627,11 +647,11 @@ namespace Oxide.Plugins
 
             if (hasAny)
             {
-                ReplyToPlayer(player, Lang.Info_AllNPCsRemoved);
+                ReplyToPlayer(player, Lang.Info_AllNpcsRemoved);
             }
             else
             {
-                ReplyToPlayer(player, Lang.Error_NoNPCsToRemove);
+                ReplyToPlayer(player, Lang.Error_NoNpcsToRemove);
             }
         }
 
@@ -824,8 +844,15 @@ namespace Oxide.Plugins
             if (_storedData == null)
                 _storedData = new StoredData();
 
-            if (_storedData.Npcs == null)
-                _storedData.Npcs = new List<NPCData>();
+            if (_storedData.PlayerNpcs == null)
+                _storedData.PlayerNpcs = new Dictionary<ulong, List<NPCData>>();
+
+            List<NPCData> playerNpcList;
+            if (!_storedData.PlayerNpcs.TryGetValue(ownerPlayer.userID, out playerNpcList) || playerNpcList == null)
+            {
+                playerNpcList = new List<NPCData>();
+                _storedData.PlayerNpcs[ownerPlayer.userID] = playerNpcList;
+            }
 
             NPCData npcData = new NPCData
             {
@@ -836,7 +863,7 @@ namespace Oxide.Plugins
                 GearSetName = gearSetName
             };
 
-            _storedData.Npcs.Add(npcData);
+            playerNpcList.Add(npcData);
             _spawnedNpcs[npcPlayer] = npcData;
 
             SaveData();
@@ -860,10 +887,18 @@ namespace Oxide.Plugins
             NPCData npcData;
             if (removeFromStoredData && _spawnedNpcs.TryGetValue(npcPlayer, out npcData) && npcData != null)
             {
-                if (_storedData != null && _storedData.Npcs != null)
+                if (_storedData != null && _storedData.PlayerNpcs != null && npcData.OwnerId != 0)
                 {
-                    _storedData.Npcs.Remove(npcData);
-                    SaveData();
+                    List<NPCData> playerNpcList;
+                    if (_storedData.PlayerNpcs.TryGetValue(npcData.OwnerId, out playerNpcList) && playerNpcList != null)
+                    {
+                        playerNpcList.Remove(npcData);
+
+                        if (playerNpcList.Count == 0)
+                            _storedData.PlayerNpcs.Remove(npcData.OwnerId);
+
+                        SaveData();
+                    }
                 }
             }
 
@@ -1050,8 +1085,8 @@ namespace Oxide.Plugins
             public const string Error_DanceNotFound = "Error.DanceNotFound";
             public const string Error_NoNPCInSight = "Error.NoNPCInSight";
             public const string Info_NPCRemoved = "Info.NPCRemoved";
-            public const string Info_AllNPCsRemoved = "Info.AllNPCsRemoved";
-            public const string Error_NoNPCsToRemove = "Error.NoNPCsToRemove";
+            public const string Info_AllNpcsRemoved = "Info.AllNPCsRemoved";
+            public const string Error_NoNpcsToRemove = "Error.NoNPCsToRemove";
             public const string Info_HelpHeader = "Info.HelpHeader";
             public const string Info_HelpUsageBase = "Info.HelpUsageBase";
             public const string Info_HelpUsageSetDance = "Info.HelpUsageSetDance";
@@ -1061,13 +1096,13 @@ namespace Oxide.Plugins
             public const string Info_HelpUsageDances = "Info.HelpUsageDances";
             public const string Info_HelpUsageGear = "Info.HelpUsageGear";
             public const string Info_ConfigDances = "Info.ConfigDances";
-            public const string Info_ConfigGearSets = "Info.ConfigGearSets";
-            public const string Error_NoDancesInConfig = "Error.NoDancesInConfig";
+            public const string Info_ConfigGearSets = "Info_ConfigGearSets";
+            public const string Error_NoDancesInConfig = "Error_NoDancesInConfig";
             public const string Error_NoGearSetsInConfig = "Error_NoGearSetsInConfig";
-            public const string Error_MissingDanceArgument = "Error.MissingDanceArgument";
-            public const string Error_MissingGearSetArgument = "Error.MissingGearSetArgument";
-            public const string Error_GearSetNotFound = "Error.GearSetNotFound";
-            public const string Error_MaxDancingNPCsReached = "Error.MaxDancingNPCsReached";
+            public const string Error_MissingDanceArgument = "Error_MissingDanceArgument";
+            public const string Error_MissingGearSetArgument = "Error_MissingGearSetArgument";
+            public const string Error_GearSetNotFound = "Error_GearSetNotFound";
+            public const string Error_MaximumDancingNpcsReached = "Error_MaximumDancingNpcsReached";
         }
 
         protected override void LoadDefaultMessages()
@@ -1081,8 +1116,8 @@ namespace Oxide.Plugins
                 [Lang.Error_DanceNotFound] = "Dance '{0}' was not found. Please specify a valid dance name or number.",
                 [Lang.Error_NoNPCInSight] = "No dancing npc found. Look directly at one that belongs to you and try again.",
                 [Lang.Info_NPCRemoved] = "Removed the selected dancing npc.",
-                [Lang.Info_AllNPCsRemoved] = "Removed all of your dancing npcs.",
-                [Lang.Error_NoNPCsToRemove] = "You do not have any active dancing npcs to remove.",
+                [Lang.Info_AllNpcsRemoved] = "Removed all of your dancing npcs.",
+                [Lang.Error_NoNpcsToRemove] = "You do not have any active dancing npcs to remove.",
                 [Lang.Info_HelpHeader] = "Dancing NPC commands ({0}):",
                 [Lang.Info_HelpUsageBase] = "{0} add [dance or number] [gear set] - Spawn a new dancing npc near you with an optional dance and gear set.",
                 [Lang.Info_HelpUsageSetDance] = "{0} setdance <dance or number> - Change the dance of the dancing npc you are currently looking at.",
@@ -1098,7 +1133,7 @@ namespace Oxide.Plugins
                 [Lang.Error_MissingDanceArgument] = "Please specify which dance you want to use. Type {0} dances to see the list.",
                 [Lang.Error_MissingGearSetArgument] = "Please specify which gear set you want to use. Type {0} gear to see the list.",
                 [Lang.Error_GearSetNotFound] = "Gear set '{0}' was not found. Please specify a valid gear set name.",
-                [Lang.Error_MaxDancingNPCsReached] = "You already have the maximum number of dancing npcs ({0}). Remove one before adding another."
+                [Lang.Error_MaximumDancingNpcsReached] = "You already have {0} dancing npcs. Remove one before spawning another."
             }, this, "en");
         }
 
