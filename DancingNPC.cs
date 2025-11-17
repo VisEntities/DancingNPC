@@ -190,13 +190,13 @@ namespace Oxide.Plugins
                 NPCData npcData = _storedData.Npcs[i];
                 if (npcData == null || npcData.Position == null)
                     continue;
-    
+
                 Vector3 position = npcData.Position.ToVector3();
 
                 BasePlayer npc = GameManager.server.CreateEntity(PREFAB_PLAYER, position) as BasePlayer;
                 if (npc == null)
                     continue;
- 
+
                 npc.Spawn();
 
                 _npcGestureLoopTimers[npc] = null;
@@ -291,88 +291,135 @@ namespace Oxide.Plugins
                 return;
             }
 
-            if (cmdArgs != null && cmdArgs.Length > 0)
+            if (cmdArgs == null || cmdArgs.Length == 0)
             {
-                string firstArgument = cmdArgs[0].ToLower();
-
-                if (firstArgument == "help")
-                {
-                    ShowHelp(player);
-                    return;
-                }
-
-                if (firstArgument == "remove")
-                {
-                    RemoveSingleNPC(player);
-                    return;
-                }
-
-                if (firstArgument == "clear")
-                {
-                    RemoveAllPlayerNPCs(player);
-                    return;
-                }
-
-                if (firstArgument == "gestures")
-                {
-                    ListGestures(player);
-                    return;
-                }
-
-                if (firstArgument == "gear")
-                {
-                    ListGearSets(player);
-                    return;
-                }
-            }
-
-            string gestureName;
-            if (cmdArgs != null && cmdArgs.Length > 0)
-                gestureName = cmdArgs[0];
-            else
-                gestureName = GetRandomGesture();
-
-            if (string.IsNullOrEmpty(gestureName))
-            {
-                ReplyToPlayer(player, Lang.Error_NoGesturesInConfig);
+                ShowHelp(player);
                 return;
             }
 
-            GestureConfig gestureConfig = FindGestureByName(gestureName);
+            string firstArgument = cmdArgs[0].ToLower();
+
+            if (firstArgument == "help")
+            {
+                ShowHelp(player);
+                return;
+            }
+
+            if (firstArgument == "add")
+            {
+                HandleAddDanceCommand(player, cmdArgs);
+                return;
+            }
+
+            if (firstArgument == "setdance")
+            {
+                HandleSetDanceCommand(player, cmdArgs);
+                return;
+            }
+
+            if (firstArgument == "setgear")
+            {
+                HandleSetGearCommand(player, cmdArgs);
+                return;
+            }
+
+            if (firstArgument == "remove")
+            {
+                RemoveSingleNPC(player);
+                return;
+            }
+
+            if (firstArgument == "clear")
+            {
+                RemoveAllPlayerNPCs(player);
+                return;
+            }
+
+            if (firstArgument == "dances")
+            {
+                ListGestures(player);
+                return;
+            }
+
+            if (firstArgument == "gear")
+            {
+                ListGearSets(player);
+                return;
+            }
+
+            ShowHelp(player);
+        }
+
+        #endregion Commands
+
+        #region Command Helpers
+
+        private void ShowHelp(BasePlayer player)
+        {
+            string baseCommand = "/" + _config.ChatCommand;
+
+            string header = GetMessage(player, Lang.Info_HelpHeader, baseCommand);
+            string usageAdd = GetMessage(player, Lang.Info_HelpUsageBase, baseCommand);
+            string usageSetDance = GetMessage(player, Lang.Info_HelpUsageGesture, baseCommand);
+            string usageSetGear = GetMessage(player, Lang.Info_HelpUsageSetGear, baseCommand);
+            string usageRemove = GetMessage(player, Lang.Info_HelpUsageRemove, baseCommand);
+            string usageClear = GetMessage(player, Lang.Info_HelpUsageClear, baseCommand);
+            string usageGestures = GetMessage(player, Lang.Info_HelpUsageGestures, baseCommand);
+            string usageGear = GetMessage(player, Lang.Info_HelpUsageGear, baseCommand);
+
+            string helpMessage = header + "\n"
+                + " - " + usageAdd + "\n"
+                + " - " + usageSetDance + "\n"
+                + " - " + usageSetGear + "\n"
+                + " - " + usageRemove + "\n"
+                + " - " + usageClear + "\n"
+                + " - " + usageGestures + "\n"
+                + " - " + usageGear;
+
+            _plugin.SendReply(player, helpMessage);
+        }
+
+        private void HandleAddDanceCommand(BasePlayer player, string[] cmdArgs)
+        {
+            string danceName = null;
+            string danceArgument = null;
+
+            if (cmdArgs != null && cmdArgs.Length > 1)
+            {
+                danceArgument = cmdArgs[1];
+                danceName = ResolveGestureNameFromArgument(danceArgument);
+            }
+            else
+            {
+                danceName = GetRandomGesture();
+            }
+
+            if (string.IsNullOrEmpty(danceName))
+            {
+                if (cmdArgs == null || cmdArgs.Length <= 1)
+                {
+                    ReplyToPlayer(player, Lang.Error_NoGesturesInConfig);
+                    return;
+                }
+
+                ReplyToPlayer(player, Lang.Error_GestureNotFound, danceArgument);
+                return;
+            }
+
+            GestureConfig gestureConfig = FindGestureByName(danceName);
+            if (gestureConfig == null)
+            {
+                ReplyToPlayer(player, Lang.Error_GestureNotFound, danceName);
+                return;
+            }
 
             string gearSetName = null;
-            if (cmdArgs != null && cmdArgs.Length > 1)
-                gearSetName = cmdArgs[1];
+            if (cmdArgs != null && cmdArgs.Length > 2)
+                gearSetName = cmdArgs[2];
             else
                 gearSetName = GearCoreUtil.GetRandomGearSet();
 
-            BasePlayer targetNpcPlayer = GetNPCInSight(player);
-            if (targetNpcPlayer != null)
-            {
-                if (gestureConfig != null)
-                {
-                    ChangeGesture(targetNpcPlayer, gestureConfig);
-                    ReplyToPlayer(player, Lang.Info_GestureUpdatedOnExistingNPC, gestureName);
-                }
-                else
-                {
-                    ReplyToPlayer(player, Lang.Error_GestureNotFound, gestureName);
-                }
-
-                if (!string.IsNullOrEmpty(gearSetName))
-                    GearCoreUtil.EquipGearSet(targetNpcPlayer, gearSetName);
-
-                FaceNPCTowardsPlayer(targetNpcPlayer, player);
-                return;
-            }
-
-            if (gestureConfig == null)
-            {
-                ReplyToPlayer(player, Lang.Error_GestureNotFound, gestureName);
-                return;
-            }
-
-            BasePlayer newNpcPlayer = SpawnNPC(player, gestureName, gearSetName);
+            BasePlayer newNpcPlayer = SpawnNPC(player, danceName, gearSetName);
             if (newNpcPlayer == null)
                 return;
 
@@ -385,24 +432,95 @@ namespace Oxide.Plugins
                 GearCoreUtil.EquipGearSet(newNpcPlayer, gearSetName);
 
             BeginGestureLoop(newNpcPlayer, gestureConfig);
-            ReplyToPlayer(player, Lang.Info_GesturePlayedOnNewNPC, gestureName);
+            ReplyToPlayer(player, Lang.Info_GesturePlayedOnNewNPC, danceName);
         }
 
-        #endregion Commands
-
-        #region Command Helpers
-
-        private void ShowHelp(BasePlayer player)
+        private void HandleSetDanceCommand(BasePlayer player, string[] cmdArgs)
         {
             string baseCommand = "/" + _config.ChatCommand;
 
-            ReplyToPlayer(player, Lang.Info_HelpHeader, baseCommand);
-            ReplyToPlayer(player, Lang.Info_HelpUsageBase, baseCommand);
-            ReplyToPlayer(player, Lang.Info_HelpUsageGesture, baseCommand);
-            ReplyToPlayer(player, Lang.Info_HelpUsageRemove, baseCommand);
-            ReplyToPlayer(player, Lang.Info_HelpUsageClear, baseCommand);
-            ReplyToPlayer(player, Lang.Info_HelpUsageGestures, baseCommand);
-            ReplyToPlayer(player, Lang.Info_HelpUsageGear, baseCommand);
+            if (cmdArgs == null || cmdArgs.Length <= 1)
+            {
+                ReplyToPlayer(player, Lang.Error_MissingDanceArgument, baseCommand);
+                return;
+            }
+
+            string danceArgument = cmdArgs[1];
+            string danceName = ResolveGestureNameFromArgument(danceArgument);
+
+            if (string.IsNullOrEmpty(danceName))
+            {
+                ReplyToPlayer(player, Lang.Error_GestureNotFound, danceArgument);
+                return;
+            }
+
+            GestureConfig gestureConfig = FindGestureByName(danceName);
+            if (gestureConfig == null)
+            {
+                ReplyToPlayer(player, Lang.Error_GestureNotFound, danceName);
+                return;
+            }
+
+            BasePlayer targetNpcPlayer = GetNPCInSight(player);
+            if (targetNpcPlayer == null)
+            {
+                ReplyToPlayer(player, Lang.Error_NoNPCInSight);
+                return;
+            }
+
+            NPCData npcData;
+            if (_spawnedNpcs.TryGetValue(targetNpcPlayer, out npcData) && npcData != null)
+            {
+                if (npcData.OwnerId != player.userID)
+                {
+                    ReplyToPlayer(player, Lang.Error_NoNPCInSight);
+                    return;
+                }
+            }
+
+            ChangeGesture(targetNpcPlayer, gestureConfig);
+            FaceNPCTowardsPlayer(targetNpcPlayer, player);
+            ReplyToPlayer(player, Lang.Info_GestureUpdatedOnExistingNPC, danceName);
+        }
+
+        private void HandleSetGearCommand(BasePlayer player, string[] cmdArgs)
+        {
+            string baseCommand = "/" + _config.ChatCommand;
+
+            if (cmdArgs == null || cmdArgs.Length <= 1)
+            {
+                ReplyToPlayer(player, Lang.Error_MissingGearSetArgument, baseCommand);
+                return;
+            }
+
+            string gearSetName = cmdArgs[1];
+
+            if (!GearCoreUtil.GearSetExists(gearSetName))
+            {
+                ReplyToPlayer(player, Lang.Error_GearSetNotFound, gearSetName);
+                return;
+            }
+
+            BasePlayer targetNpcPlayer = GetNPCInSight(player);
+            if (targetNpcPlayer == null)
+            {
+                ReplyToPlayer(player, Lang.Error_NoNPCInSight);
+                return;
+            }
+
+            NPCData npcData;
+            if (_spawnedNpcs.TryGetValue(targetNpcPlayer, out npcData) && npcData != null)
+            {
+                if (npcData.OwnerId != player.userID)
+                {
+                    ReplyToPlayer(player, Lang.Error_NoNPCInSight);
+                    return;
+                }
+            }
+
+            GearCoreUtil.EquipGearSet(targetNpcPlayer, gearSetName);
+            FaceNPCTowardsPlayer(targetNpcPlayer, player);
+            ReplyToPlayer(player, Lang.Info_GearSetUpdatedOnExistingNPC, gearSetName);
         }
 
         private void RemoveSingleNPC(BasePlayer player)
@@ -468,7 +586,17 @@ namespace Oxide.Plugins
                 return;
             }
 
-            string gesturesText = string.Join(", ", _config.Gestures.ToArray());
+            List<string> formattedGestures = new List<string>();
+
+            for (int i = 0; i < _config.Gestures.Count; i++)
+            {
+                int gestureNumber = i + 1;
+                string gestureName = _config.Gestures[i];
+                string formattedEntry = "- " + gestureNumber + " = " + gestureName;
+                formattedGestures.Add(formattedEntry);
+            }
+
+            string gesturesText = string.Join("\n", formattedGestures.ToArray());
             ReplyToPlayer(player, Lang.Info_ConfigGestures, gesturesText);
         }
 
@@ -480,7 +608,16 @@ namespace Oxide.Plugins
                 return;
             }
 
-            string gearSetsText = string.Join(", ", _config.GearSets.ToArray());
+            List<string> formattedGearSets = new List<string>();
+
+            for (int i = 0; i < _config.GearSets.Count; i++)
+            {
+                string gearSetName = _config.GearSets[i];
+                string formattedEntry = "- " + gearSetName;
+                formattedGearSets.Add(formattedEntry);
+            }
+
+            string gearSetsText = string.Join("\n", formattedGearSets.ToArray());
             ReplyToPlayer(player, Lang.Info_ConfigGearSets, gearSetsText);
         }
 
@@ -568,6 +705,30 @@ namespace Oxide.Plugins
 
             int gestureIndex = UnityEngine.Random.Range(0, _config.Gestures.Count);
             return _config.Gestures[gestureIndex];
+        }
+
+        private string ResolveGestureNameFromArgument(string gestureArgument)
+        {
+            if (string.IsNullOrEmpty(gestureArgument))
+                return null;
+
+            int gestureIndex;
+            bool parsedSuccessfully = int.TryParse(gestureArgument, out gestureIndex);
+            if (parsedSuccessfully)
+            {
+                if (_config == null)
+                    return null;
+
+                if (_config.Gestures == null)
+                    return null;
+
+                if (gestureIndex < 1 || gestureIndex > _config.Gestures.Count)
+                    return null;
+
+                return _config.Gestures[gestureIndex - 1];
+            }
+
+            return gestureArgument;
         }
 
         private GestureConfig FindGestureByName(string gestureName)
@@ -738,7 +899,7 @@ namespace Oxide.Plugins
         {
             if (plugin != null && plugin.IsLoaded)
                 return true;
-  
+
             return false;
         }
 
@@ -828,6 +989,7 @@ namespace Oxide.Plugins
             public const string Error_NoPermission = "Error.NoPermission";
             public const string Info_GesturePlayedOnNewNPC = "Info.GesturePlayedOnNewNPC";
             public const string Info_GestureUpdatedOnExistingNPC = "Info.GestureUpdatedOnExistingNPC";
+            public const string Info_GearSetUpdatedOnExistingNPC = "Info.GearSetUpdatedOnExistingNPC";
             public const string Error_GestureNotFound = "Error.GestureNotFound";
             public const string Error_NoNPCInSight = "Error.NoNPCInSight";
             public const string Info_NPCRemoved = "Info.NPCRemoved";
@@ -836,6 +998,7 @@ namespace Oxide.Plugins
             public const string Info_HelpHeader = "Info.HelpHeader";
             public const string Info_HelpUsageBase = "Info.HelpUsageBase";
             public const string Info_HelpUsageGesture = "Info.HelpUsageGesture";
+            public const string Info_HelpUsageSetGear = "Info.HelpUsageSetGear";
             public const string Info_HelpUsageRemove = "Info.HelpUsageRemove";
             public const string Info_HelpUsageClear = "Info.HelpUsageClear";
             public const string Info_HelpUsageGestures = "Info.HelpUsageGestures";
@@ -844,6 +1007,9 @@ namespace Oxide.Plugins
             public const string Info_ConfigGearSets = "Info.ConfigGearSets";
             public const string Error_NoGesturesInConfig = "Error.NoGesturesInConfig";
             public const string Error_NoGearSetsInConfig = "Error.NoGearSetsInConfig";
+            public const string Error_MissingDanceArgument = "Error.MissingDanceArgument";
+            public const string Error_MissingGearSetArgument = "Error.MissingGearSetArgument";
+            public const string Error_GearSetNotFound = "Error.GearSetNotFound";
         }
 
         protected override void LoadDefaultMessages()
@@ -851,24 +1017,29 @@ namespace Oxide.Plugins
             lang.RegisterMessages(new Dictionary<string, string>
             {
                 [Lang.Error_NoPermission] = "You do not have permission to use this command.",
-                [Lang.Info_GesturePlayedOnNewNPC] = "Spawned a new dancing npc and started gesture '{0}'.",
-                [Lang.Info_GestureUpdatedOnExistingNPC] = "Updated the npc's gesture to '{0}'.",
-                [Lang.Error_GestureNotFound] = "Gesture '{0}' was not found. Please specify a valid gesture name.",
+                [Lang.Info_GesturePlayedOnNewNPC] = "Spawned a new dancing npc and started dance '{0}'.",
+                [Lang.Info_GestureUpdatedOnExistingNPC] = "Updated the npc's dance to '{0}'.",
+                [Lang.Info_GearSetUpdatedOnExistingNPC] = "Updated the npc's gear set to '{0}'.",
+                [Lang.Error_GestureNotFound] = "Dance '{0}' was not found. Please specify a valid dance name or number.",
                 [Lang.Error_NoNPCInSight] = "No dancing npc found. Look directly at one that belongs to you and try again.",
                 [Lang.Info_NPCRemoved] = "Removed the selected dancing npc.",
                 [Lang.Info_AllNPCsRemoved] = "Removed all of your dancing npcs.",
                 [Lang.Error_NoNPCsToRemove] = "You do not have any active dancing npcs to remove.",
-                [Lang.Info_HelpHeader] = "Dancing NPC command usage ({0}):",
-                [Lang.Info_HelpUsageBase] = "{0} - Spawn or update a dancing npc with a random gesture and gear set.",
-                [Lang.Info_HelpUsageGesture] = "{0} <gesture> [gear set] - Spawn or update using a specific gesture and optional gear set.",
+                [Lang.Info_HelpHeader] = "Dancing NPC commands ({0}):",
+                [Lang.Info_HelpUsageBase] = "{0} add [dance or number] [gear set] - Spawn a new dancing npc near you with an optional dance and gear set.",
+                [Lang.Info_HelpUsageGesture] = "{0} setdance <dance or number> - Change the dance of the dancing npc you are currently looking at.",
+                [Lang.Info_HelpUsageSetGear] = "{0} setgear <gear set> - Change the gear set of the dancing npc you are currently looking at.",
                 [Lang.Info_HelpUsageRemove] = "{0} remove - Remove the dancing npc you are currently looking at.",
                 [Lang.Info_HelpUsageClear] = "{0} clear - Remove all dancing npcs that belong to you.",
-                [Lang.Info_HelpUsageGestures] = "{0} gestures - Show the list of configured gesture names.",
+                [Lang.Info_HelpUsageGestures] = "{0} dances - Show the list of available dances with their numbers.",
                 [Lang.Info_HelpUsageGear] = "{0} gear - Show the list of configured gear set names.",
-                [Lang.Info_ConfigGestures] = "Configured gestures: {0}",
-                [Lang.Info_ConfigGearSets] = "Configured gear sets: {0}",
-                [Lang.Error_NoGesturesInConfig] = "No gestures are configured. Please add gesture names to the plugin configuration.",
-                [Lang.Error_NoGearSetsInConfig] = "No gear sets are configured. Please add gear set names to the plugin configuration."
+                [Lang.Info_ConfigGestures] = "Available dances (you can use the number or name):\n{0}",
+                [Lang.Info_ConfigGearSets] = "Configured gear sets:\n{0}",
+                [Lang.Error_NoGesturesInConfig] = "No dances are configured. Please add dance names to the plugin configuration.",
+                [Lang.Error_NoGearSetsInConfig] = "No gear sets are configured. Please add gear set names to the plugin configuration.",
+                [Lang.Error_MissingDanceArgument] = "Please specify which dance you want to use. Type {0} dances to see the list.",
+                [Lang.Error_MissingGearSetArgument] = "Please specify which gear set you want to use. Type {0} gear to see the list.",
+                [Lang.Error_GearSetNotFound] = "Gear set '{0}' was not found. Please specify a valid gear set name."
             }, this, "en");
         }
 
