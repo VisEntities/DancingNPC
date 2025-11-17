@@ -5,15 +5,17 @@
  */
 
 using Newtonsoft.Json;
+using Oxide.Core;
 using Oxide.Core.Plugins;
 using Rust;
 using System;
 using System.Collections.Generic;
+using System.IO;
 using UnityEngine;
 
 namespace Oxide.Plugins
 {
-    [Info("Dancing NPC", "VisEntities", "1.3.1")]
+    [Info("Dancing NPC", "VisEntities", "1.4.0")]
     [Description("Allows players to spawn an npc that performs various dance gestures.")]
     public class DancingNPC : RustPlugin
     {
@@ -28,11 +30,13 @@ namespace Oxide.Plugins
 
         private static DancingNPC _plugin;
         private static Configuration _config;
+        private StoredData _storedData;
 
         private const int LAYER_PLAYERS = Layers.Mask.Player_Server;
         private const string PREFAB_PLAYER = "assets/prefabs/player/player.prefab";
 
-        private Dictionary<BasePlayer, Timer> _npcTimers = new Dictionary<BasePlayer, Timer>();
+        private readonly Dictionary<BasePlayer, Timer> _npcGestureLoopTimers = new Dictionary<BasePlayer, Timer>();
+        private readonly Dictionary<BasePlayer, NPCData> _spawnedNpcs = new Dictionary<BasePlayer, NPCData>();
 
         #endregion Fields
 
@@ -83,11 +87,6 @@ namespace Oxide.Plugins
             if (string.Compare(_config.Version, "1.0.0") < 0)
                 _config = defaultConfig;
 
-            if (string.Compare(_config.Version, "1.2.0") < 0)
-            {
-                _config.GearSets = defaultConfig.GearSets;
-            }
-
             PrintWarning("Config update complete! Updated from version " + _config.Version + " to " + Version.ToString());
             _config.Version = Version.ToString();
         }
@@ -98,7 +97,7 @@ namespace Oxide.Plugins
             {
                 Version = Version.ToString(),
                 ChatCommand = "dance",
-                Gestures = new List<string>()
+                Gestures = new List<string>
                 {
                     "shrug",
                     "victory",
@@ -115,18 +114,136 @@ namespace Oxide.Plugins
 
         #endregion Configuration
 
+        #region Stored Data
+
+        private class StoredData
+        {
+            [JsonProperty("Npcs")]
+            public List<NPCData> Npcs { get; set; } = new List<NPCData>();
+        }
+
+        private class NPCData
+        {
+            [JsonProperty("Owner Id")]
+            public ulong OwnerId { get; set; }
+
+            [JsonProperty("Position")]
+            public SerializableVector3 Position { get; set; }
+
+            [JsonProperty("Yaw")]
+            public float Yaw { get; set; }
+
+            [JsonProperty("Gesture")]
+            public string GestureName { get; set; }
+
+            [JsonProperty("Gear Set")]
+            public string GearSetName { get; set; }
+        }
+
+        private class SerializableVector3
+        {
+            [JsonProperty("x")]
+            public float X { get; set; }
+
+            [JsonProperty("y")]
+            public float Y { get; set; }
+
+            [JsonProperty("z")]
+            public float Z { get; set; }
+
+            public SerializableVector3(Vector3 vector)
+            {
+                X = vector.x;
+                Y = vector.y;
+                Z = vector.z;
+            }
+
+            public Vector3 ToVector3()
+            {
+                return new Vector3(X, Y, Z);
+            }
+        }
+
+        private void LoadData()
+        {
+            _storedData = DataFileUtil.LoadOrCreate<StoredData>(DataFileUtil.GetFilePath());
+
+            if (_storedData == null)
+                _storedData = new StoredData();
+
+            if (_storedData.Npcs == null)
+                _storedData.Npcs = new List<NPCData>();
+        }
+
+        private void SaveData()
+        {
+            DataFileUtil.Save(DataFileUtil.GetFilePath(), _storedData);
+        }
+
+        private void RespawnSavedNpcs()
+        {
+            if (_storedData == null || _storedData.Npcs == null || _storedData.Npcs.Count == 0)
+                return;
+
+            for (int i = 0; i < _storedData.Npcs.Count; i++)
+            {
+                NPCData npcData = _storedData.Npcs[i];
+                if (npcData == null || npcData.Position == null)
+                    continue;
+    
+                Vector3 position = npcData.Position.ToVector3();
+
+                BasePlayer npc = GameManager.server.CreateEntity(PREFAB_PLAYER, position) as BasePlayer;
+                if (npc == null)
+                    continue;
+ 
+                npc.Spawn();
+
+                _npcGestureLoopTimers[npc] = null;
+                _spawnedNpcs[npc] = npcData;
+
+                if (!float.IsNaN(npcData.Yaw))
+                    SetNPCYaw(npc, npcData.Yaw);
+
+                if (!string.IsNullOrEmpty(npcData.GearSetName))
+                    GearCoreUtil.EquipGearSet(npc, npcData.GearSetName);
+
+                if (!string.IsNullOrEmpty(npcData.GestureName))
+                {
+                    GestureConfig gestureConfig = FindGestureByName(npcData.GestureName);
+                    if (gestureConfig != null)
+                        BeginGestureLoop(npc, gestureConfig);
+                }
+            }
+        }
+
+        #endregion Stored Data
+
         #region Oxide Hooks
 
         private void Init()
         {
             _plugin = this;
+            LoadData();
             PermissionUtil.RegisterPermissions();
-            cmd.AddChatCommand(_config.ChatCommand, this, nameof(cmdDance));
+
+            if (!string.IsNullOrEmpty(_config.ChatCommand))
+                cmd.AddChatCommand(_config.ChatCommand, this, nameof(cmdDance));
+        }
+
+        private void OnServerInitialized()
+        {
+            _plugin = this;
+
+            CheckDependencies(false);
+            RespawnSavedNpcs();
         }
 
         private void Unload()
         {
             CleanupSpawnedNPCAndTimers();
+            SaveData();
+
             _config = null;
             _plugin = null;
         }
@@ -138,22 +255,24 @@ namespace Oxide.Plugins
         private static class PermissionUtil
         {
             public const string USE = "dancingnpc.use";
-            private static readonly List<string> _permissions = new List<string>
+
+            private static readonly List<string> _all = new List<string>
             {
-                USE,
+                USE
             };
 
             public static void RegisterPermissions()
             {
-                foreach (var permission in _permissions)
+                for (int i = 0; i < _all.Count; i++)
                 {
-                    _plugin.permission.RegisterPermission(permission, _plugin);
+                    string perm = _all[i];
+                    _plugin.permission.RegisterPermission(perm, _plugin);
                 }
             }
 
-            public static bool HasPermission(BasePlayer player, string permissionName)
+            public static bool HasPermission(BasePlayer player, string permission)
             {
-                return _plugin.permission.UserHasPermission(player.UserIDString, permissionName);
+                return _plugin.permission.UserHasPermission(player.UserIDString, permission);
             }
         }
 
@@ -161,204 +280,442 @@ namespace Oxide.Plugins
 
         #region Commands
 
-        private void cmdDance(BasePlayer player, string cmd, string[] args)
+        private void cmdDance(BasePlayer player, string cmd, string[] cmdArgs)
         {
             if (player == null)
                 return;
 
             if (!PermissionUtil.HasPermission(player, PermissionUtil.USE))
             {
-                MessagePlayer(player, Lang.NoPermission);
+                ReplyToPlayer(player, Lang.Error_NoPermission);
                 return;
             }
 
+            if (cmdArgs != null && cmdArgs.Length > 0)
+            {
+                string firstArgument = cmdArgs[0].ToLower();
+
+                if (firstArgument == "help")
+                {
+                    ShowHelp(player);
+                    return;
+                }
+
+                if (firstArgument == "remove")
+                {
+                    RemoveSingleNPC(player);
+                    return;
+                }
+
+                if (firstArgument == "clear")
+                {
+                    RemoveAllPlayerNPCs(player);
+                    return;
+                }
+
+                if (firstArgument == "gestures")
+                {
+                    ListGestures(player);
+                    return;
+                }
+
+                if (firstArgument == "gear")
+                {
+                    ListGearSets(player);
+                    return;
+                }
+            }
+
             string gestureName;
-            if (args.Length > 0)
-                gestureName = args[0];
+            if (cmdArgs != null && cmdArgs.Length > 0)
+                gestureName = cmdArgs[0];
             else
                 gestureName = GetRandomGesture();
 
+            if (string.IsNullOrEmpty(gestureName))
+            {
+                ReplyToPlayer(player, Lang.Error_NoGesturesInConfig);
+                return;
+            }
+
             GestureConfig gestureConfig = FindGestureByName(gestureName);
 
-            string gearSetName;
-            bool gearSetExists = false;
-            if (args.Length > 1)
-            {
-                gearSetName = args[1];
-                gearSetExists = GearSetExists(gearSetName);
-            }
+            string gearSetName = null;
+            if (cmdArgs != null && cmdArgs.Length > 1)
+                gearSetName = cmdArgs[1];
             else
-            {
-                gearSetName = GetRandomGearSet();
-                gearSetExists = gearSetName != null && GearSetExists(gearSetName);
-            }
+                gearSetName = GearCoreUtil.GetRandomGearSet();
 
-            BasePlayer targetNPC = GetNPCInSight(player);
-            if (targetNPC != null)
+            BasePlayer targetNpcPlayer = GetNPCInSight(player);
+            if (targetNpcPlayer != null)
             {
                 if (gestureConfig != null)
                 {
-                    UpdateNPCGesture(targetNPC, gestureConfig);
-                    MessagePlayer(player, Lang.GestureUpdatedOnExistingNPC, gestureName);
+                    ChangeGesture(targetNpcPlayer, gestureConfig);
+                    ReplyToPlayer(player, Lang.Info_GestureUpdatedOnExistingNPC, gestureName);
                 }
                 else
-                    MessagePlayer(player, Lang.GestureNotFound, gestureName);
-
-                EquipGearSet(targetNPC, gearSetName);
-                SetNPCFacingDirection(targetNPC, player);
-            }
-            else
-            {
-                if (gestureConfig != null)
                 {
-                    targetNPC = SpawnNPC(player);
-                    timer.Once(1f, () =>
-                    {
-                        SetNPCFacingDirection(targetNPC, player);
-                    });
-
-                    EquipGearSet(targetNPC, gearSetName);
-                    StartGestureLoop(targetNPC, gestureConfig);
-                    MessagePlayer(player, Lang.GesturePlayedOnNewNPC, gestureName);
+                    ReplyToPlayer(player, Lang.Error_GestureNotFound, gestureName);
                 }
-                else
-                    MessagePlayer(player, Lang.GestureNotFound, gestureName);
+
+                if (!string.IsNullOrEmpty(gearSetName))
+                    GearCoreUtil.EquipGearSet(targetNpcPlayer, gearSetName);
+
+                FaceNPCTowardsPlayer(targetNpcPlayer, player);
+                return;
             }
+
+            if (gestureConfig == null)
+            {
+                ReplyToPlayer(player, Lang.Error_GestureNotFound, gestureName);
+                return;
+            }
+
+            BasePlayer newNpcPlayer = SpawnNPC(player, gestureName, gearSetName);
+            if (newNpcPlayer == null)
+                return;
+
+            timer.Once(1f, delegate
+            {
+                FaceNPCTowardsPlayer(newNpcPlayer, player);
+            });
+
+            if (!string.IsNullOrEmpty(gearSetName))
+                GearCoreUtil.EquipGearSet(newNpcPlayer, gearSetName);
+
+            BeginGestureLoop(newNpcPlayer, gestureConfig);
+            ReplyToPlayer(player, Lang.Info_GesturePlayedOnNewNPC, gestureName);
         }
 
         #endregion Commands
 
-        #region NPC Spawning and Retrieval
+        #region Command Helpers
 
-        private BasePlayer GetNPCInSight(BasePlayer player)
+        private void ShowHelp(BasePlayer player)
         {
-            RaycastHit raycastHit;
-            if (Physics.Raycast(player.eyes.HeadRay(), out raycastHit, 10f, LAYER_PLAYERS, QueryTriggerInteraction.Ignore))
+            string baseCommand = "/" + _config.ChatCommand;
+
+            ReplyToPlayer(player, Lang.Info_HelpHeader, baseCommand);
+            ReplyToPlayer(player, Lang.Info_HelpUsageBase, baseCommand);
+            ReplyToPlayer(player, Lang.Info_HelpUsageGesture, baseCommand);
+            ReplyToPlayer(player, Lang.Info_HelpUsageRemove, baseCommand);
+            ReplyToPlayer(player, Lang.Info_HelpUsageClear, baseCommand);
+            ReplyToPlayer(player, Lang.Info_HelpUsageGestures, baseCommand);
+            ReplyToPlayer(player, Lang.Info_HelpUsageGear, baseCommand);
+        }
+
+        private void RemoveSingleNPC(BasePlayer player)
+        {
+            BasePlayer targetNPC = GetNPCInSight(player);
+            if (targetNPC == null)
             {
-                BasePlayer targetNPC = raycastHit.GetEntity() as BasePlayer;
-                if (targetNPC != null && _npcTimers.ContainsKey(targetNPC))
+                ReplyToPlayer(player, Lang.Error_NoNPCInSight);
+                return;
+            }
+
+            NPCData npcData;
+            if (_spawnedNpcs.TryGetValue(targetNPC, out npcData) && npcData != null)
+            {
+                if (npcData.OwnerId != player.userID)
                 {
-                    return targetNPC;
+                    ReplyToPlayer(player, Lang.Error_NoNPCInSight);
+                    return;
                 }
             }
+
+            RemoveNPC(targetNPC, true);
+            ReplyToPlayer(player, Lang.Info_NPCRemoved);
+        }
+
+        private void RemoveAllPlayerNPCs(BasePlayer player)
+        {
+            List<BasePlayer> npcsToRemove = new List<BasePlayer>();
+            bool hasAny = false;
+
+            foreach (KeyValuePair<BasePlayer, NPCData> kvp in _spawnedNpcs)
+            {
+                BasePlayer npc = kvp.Key;
+                NPCData npcData = kvp.Value;
+
+                if (npcData != null && npcData.OwnerId == player.userID)
+                {
+                    npcsToRemove.Add(npc);
+                }
+            }
+
+            for (int i = 0; i < npcsToRemove.Count; i++)
+            {
+                RemoveNPC(npcsToRemove[i], true);
+                hasAny = true;
+            }
+
+            if (hasAny)
+            {
+                ReplyToPlayer(player, Lang.Info_AllNPCsRemoved);
+            }
+            else
+            {
+                ReplyToPlayer(player, Lang.Error_NoNPCsToRemove);
+            }
+        }
+
+        private void ListGestures(BasePlayer player)
+        {
+            if (_config == null || _config.Gestures == null || _config.Gestures.Count == 0)
+            {
+                ReplyToPlayer(player, Lang.Error_NoGesturesInConfig);
+                return;
+            }
+
+            string gesturesText = string.Join(", ", _config.Gestures.ToArray());
+            ReplyToPlayer(player, Lang.Info_ConfigGestures, gesturesText);
+        }
+
+        private void ListGearSets(BasePlayer player)
+        {
+            if (_config == null || _config.GearSets == null || _config.GearSets.Count == 0)
+            {
+                ReplyToPlayer(player, Lang.Error_NoGearSetsInConfig);
+                return;
+            }
+
+            string gearSetsText = string.Join(", ", _config.GearSets.ToArray());
+            ReplyToPlayer(player, Lang.Info_ConfigGearSets, gearSetsText);
+        }
+
+        #endregion Command Helpers
+
+        #region NPC Lookup and Orientation
+
+        private BasePlayer GetNPCInSight(BasePlayer sourcePlayer)
+        {
+            RaycastHit raycastHit;
+
+            bool hitPlayer = Physics.Raycast(sourcePlayer.eyes.HeadRay(), out raycastHit, 10f, LAYER_PLAYERS, QueryTriggerInteraction.Ignore);
+            if (!hitPlayer)
+                return null;
+
+            BasePlayer targetNpcPlayer = raycastHit.GetEntity() as BasePlayer;
+            if (targetNpcPlayer != null && _npcGestureLoopTimers.ContainsKey(targetNpcPlayer))
+                return targetNpcPlayer;
 
             return null;
         }
 
-        private BasePlayer SpawnNPC(BasePlayer ownerPlayer)
+        private void FaceNPCTowardsPlayer(BasePlayer npcPlayer, BasePlayer referencePlayer)
         {
-            BasePlayer npc = GameManager.server.CreateEntity(PREFAB_PLAYER, ownerPlayer.transform.position) as BasePlayer;
-            npc.Spawn();
+            Vector3 directionToReferencePlayer = (referencePlayer.transform.position - npcPlayer.transform.position).normalized;
+            Quaternion lookRotation = Quaternion.LookRotation(directionToReferencePlayer);
+            Vector3 viewAngles = lookRotation.eulerAngles;
 
-            _npcTimers.Add(npc, null);
-            return npc;
-        }
-        
-        private void SetNPCFacingDirection(BasePlayer npc, BasePlayer player)
-        {
-            Vector3 directionToPlayer = (player.transform.position - npc.transform.position).normalized;
-            npc.OverrideViewAngles(Quaternion.LookRotation(directionToPlayer).eulerAngles);
-            npc.SendNetworkUpdateImmediate();
-        }
+            npcPlayer.OverrideViewAngles(viewAngles);
+            npcPlayer.SendNetworkUpdateImmediate();
 
-        #endregion NPC Spawning and Retrieval
-
-        #region Gesture Execution
-
-        private void UpdateNPCGesture(BasePlayer npc, GestureConfig gestureConfig)
-        {
-            Timer existingTimer;
-            if (_npcTimers.TryGetValue(npc, out existingTimer) && existingTimer != null)
-                existingTimer.Destroy();
-
-            StartGestureLoop(npc, gestureConfig);
-        }
-
-        private void StartGestureLoop(BasePlayer npc, GestureConfig gestureConfig)
-        {
-            npc.Server_StartGesture(gestureConfig);
-
-            Timer gestureRepeatTimer = timer.Every(gestureConfig.duration, () =>
+            NPCData npcData;
+            if (_spawnedNpcs.TryGetValue(npcPlayer, out npcData) && npcData != null)
             {
-                if (npc != null)
-                    npc.Server_StartGesture(gestureConfig);
+                npcData.Yaw = viewAngles.y;
+                npcData.Position = new SerializableVector3(npcPlayer.transform.position);
+                SaveData();
+            }
+        }
+
+        private void SetNPCYaw(BasePlayer npcPlayer, float yawRotation)
+        {
+            Vector3 viewAngles = new Vector3(0f, yawRotation, 0f);
+            npcPlayer.OverrideViewAngles(viewAngles);
+            npcPlayer.SendNetworkUpdateImmediate();
+        }
+
+        #endregion NPC Lookup and Orientation
+
+        #region Gesture Selection and Looping
+
+        private void ChangeGesture(BasePlayer npcPlayer, GestureConfig gestureConfig)
+        {
+            Timer existingGestureTimer;
+            if (_npcGestureLoopTimers.TryGetValue(npcPlayer, out existingGestureTimer) && existingGestureTimer != null)
+                existingGestureTimer.Destroy();
+
+            BeginGestureLoop(npcPlayer, gestureConfig);
+
+            NPCData npcData;
+            if (_spawnedNpcs.TryGetValue(npcPlayer, out npcData) && npcData != null)
+            {
+                npcData.GestureName = gestureConfig.convarName;
+                SaveData();
+            }
+        }
+
+        private void BeginGestureLoop(BasePlayer npcPlayer, GestureConfig gestureConfig)
+        {
+            npcPlayer.Server_StartGesture(gestureConfig);
+
+            Timer gestureRepeatTimer = timer.Every(gestureConfig.duration, delegate
+            {
+                if (npcPlayer != null)
+                    npcPlayer.Server_StartGesture(gestureConfig);
             });
 
-            _npcTimers[npc] = gestureRepeatTimer;
+            _npcGestureLoopTimers[npcPlayer] = gestureRepeatTimer;
         }
 
         private string GetRandomGesture()
         {
-            int index = UnityEngine.Random.Range(0, _config.Gestures.Count);
-            return _config.Gestures[index];
+            if (_config == null || _config.Gestures == null || _config.Gestures.Count == 0)
+                return null;
+
+            int gestureIndex = UnityEngine.Random.Range(0, _config.Gestures.Count);
+            return _config.Gestures[gestureIndex];
         }
 
         private GestureConfig FindGestureByName(string gestureName)
         {
-            GestureConfig[] allGestures = GestureCollection.Instance.AllGestures;
-            if (allGestures != null)
+            if (string.IsNullOrEmpty(gestureName))
+                return null;
+
+            GestureConfig[] availableGestures = GestureCollection.Instance.AllGestures;
+            if (availableGestures == null)
+                return null;
+
+            for (int gestureIndex = 0; gestureIndex < availableGestures.Length; gestureIndex++)
             {
-                foreach (GestureConfig gesture in allGestures)
-                {
-                    if (gesture.convarName.Equals(gestureName, StringComparison.OrdinalIgnoreCase))
-                        return gesture;
-                }
+                GestureConfig gestureConfig = availableGestures[gestureIndex];
+                if (gestureConfig != null && gestureConfig.convarName.Equals(gestureName, StringComparison.OrdinalIgnoreCase))
+                    return gestureConfig;
             }
 
             return null;
         }
 
-        #endregion Gesture Execution
+        #endregion Gesture Selection and Looping
 
-        #region NPC and Timers Cleanup
+        #region NPC Spawning and Lifecycle
+
+        private BasePlayer SpawnNPC(BasePlayer ownerPlayer, string gestureName, string gearSetName)
+        {
+            BasePlayer npcPlayer = GameManager.server.CreateEntity(PREFAB_PLAYER, ownerPlayer.transform.position) as BasePlayer;
+            if (npcPlayer == null)
+                return null;
+
+            npcPlayer.Spawn();
+
+            _npcGestureLoopTimers[npcPlayer] = null;
+
+            if (_storedData == null)
+                _storedData = new StoredData();
+
+            if (_storedData.Npcs == null)
+                _storedData.Npcs = new List<NPCData>();
+
+            NPCData npcData = new NPCData
+            {
+                OwnerId = ownerPlayer.userID,
+                Position = new SerializableVector3(npcPlayer.transform.position),
+                Yaw = npcPlayer.transform.rotation.eulerAngles.y,
+                GestureName = gestureName,
+                GearSetName = gearSetName
+            };
+
+            _storedData.Npcs.Add(npcData);
+            _spawnedNpcs[npcPlayer] = npcData;
+
+            SaveData();
+            return npcPlayer;
+        }
+
+        private void RemoveNPC(BasePlayer npcPlayer, bool removeFromStoredData)
+        {
+            if (npcPlayer == null)
+                return;
+
+            Timer existingGestureTimer;
+            if (_npcGestureLoopTimers.TryGetValue(npcPlayer, out existingGestureTimer))
+            {
+                if (existingGestureTimer != null)
+                    existingGestureTimer.Destroy();
+
+                _npcGestureLoopTimers.Remove(npcPlayer);
+            }
+
+            NPCData npcData;
+            if (removeFromStoredData && _spawnedNpcs.TryGetValue(npcPlayer, out npcData) && npcData != null)
+            {
+                if (_storedData != null && _storedData.Npcs != null)
+                {
+                    _storedData.Npcs.Remove(npcData);
+                    SaveData();
+                }
+            }
+
+            _spawnedNpcs.Remove(npcPlayer);
+
+            if (!npcPlayer.IsDestroyed)
+                npcPlayer.Kill();
+        }
 
         private void CleanupSpawnedNPCAndTimers()
         {
-            foreach (var kvp in _npcTimers)
+            List<BasePlayer> npcPlayersToRemove = new List<BasePlayer>();
+
+            foreach (KeyValuePair<BasePlayer, Timer> npcTimerPair in _npcGestureLoopTimers)
             {
-                BasePlayer npc = kvp.Key;
-                Timer timer = kvp.Value;
-
-                if (npc != null)
-                    npc.Kill();
-
-                if (timer != null)
-                    timer.Destroy();
+                BasePlayer npcPlayer = npcTimerPair.Key;
+                if (npcPlayer != null)
+                    npcPlayersToRemove.Add(npcPlayer);
             }
 
-            _npcTimers.Clear();
+            for (int npcIndex = 0; npcIndex < npcPlayersToRemove.Count; npcIndex++)
+                RemoveNPC(npcPlayersToRemove[npcIndex], false);
+
+            _npcGestureLoopTimers.Clear();
+            _spawnedNpcs.Clear();
         }
 
-        #endregion NPC and Timers Cleanup
+        #endregion NPC Spawning and Lifecycle
 
-        #region Gear Set Equipping
+        #region 3rd Party Integration
 
-        public bool EquipGearSet(BasePlayer player, string gearSetName, bool clearInventory = true)
+        public static class GearCoreUtil
         {
-            if (!PluginLoaded(_plugin.GearCore))
-                return false;
+            private static bool Loaded
+            {
+                get
+                {
+                    return _plugin != null &&
+                           _plugin.GearCore != null &&
+                           _plugin.GearCore.IsLoaded;
+                }
+            }
 
-            return _plugin.GearCore.Call<bool>("EquipGearSet", player, gearSetName, clearInventory);
+            public static bool GearSetExists(string gearSetName)
+            {
+                if (!Loaded)
+                    return false;
+
+                return _plugin.GearCore.Call<bool>("GearSetExists", gearSetName);
+            }
+
+            public static bool EquipGearSet(BasePlayer player, string gearSetName, bool clearInventory = true)
+            {
+                if (!Loaded)
+                    return false;
+
+                return _plugin.GearCore.Call<bool>("EquipGearSet", player, gearSetName, clearInventory);
+            }
+
+            public static string GetRandomGearSet()
+            {
+                if (_config.GearSets == null || _config.GearSets.Count == 0)
+                    return null;
+
+                int index = UnityEngine.Random.Range(0, _config.GearSets.Count);
+                return _config.GearSets[index];
+            }
         }
 
-        public bool GearSetExists(string gearSetName)
-        {
-            if (!PluginLoaded(_plugin.GearCore))
-                return false;
-
-            return _plugin.GearCore.Call<bool>("GearSetExists", gearSetName);
-        }
-
-        private string GetRandomGearSet()
-        {
-            if (_config.GearSets.Count == 0)
-                return null;
-
-            int index = UnityEngine.Random.Range(0, _config.GearSets.Count);
-            return _config.GearSets[index];
-        }
-
-        #endregion Gear Set Equipping
+        #endregion 3rd Party Integration
 
         #region Helper Functions
 
@@ -381,47 +738,163 @@ namespace Oxide.Plugins
         {
             if (plugin != null && plugin.IsLoaded)
                 return true;
-            else
-                return false;
+  
+            return false;
         }
 
         #endregion Helper Functions
+
+        #region Helper Classes
+
+        public static class DataFileUtil
+        {
+            private const string FOLDER = "";
+
+            public static void EnsureFolderCreated()
+            {
+                string path = Path.Combine(Interface.Oxide.DataDirectory, FOLDER);
+
+                if (!Directory.Exists(path))
+                    Directory.CreateDirectory(path);
+            }
+
+            public static string GetFilePath(string filename = null)
+            {
+                if (filename == null)
+                    filename = _plugin.Name;
+
+                return Path.Combine(FOLDER, filename);
+            }
+
+            public static string[] GetAllFilePaths()
+            {
+                string[] filePaths = Interface.Oxide.DataFileSystem.GetFiles(FOLDER);
+                for (int i = 0; i < filePaths.Length; i++)
+                {
+                    filePaths[i] = filePaths[i].Substring(0, filePaths[i].Length - 5);
+                }
+
+                return filePaths;
+            }
+
+            public static bool Exists(string filePath)
+            {
+                return Interface.Oxide.DataFileSystem.ExistsDatafile(filePath);
+            }
+
+            public static T Load<T>(string filePath) where T : class, new()
+            {
+                T data = Interface.Oxide.DataFileSystem.ReadObject<T>(filePath);
+                if (data == null)
+                    data = new T();
+
+                return data;
+            }
+
+            public static T LoadIfExists<T>(string filePath) where T : class, new()
+            {
+                if (Exists(filePath))
+                    return Load<T>(filePath);
+                else
+                    return null;
+            }
+
+            public static T LoadOrCreate<T>(string filePath) where T : class, new()
+            {
+                T data = LoadIfExists<T>(filePath);
+                if (data == null)
+                    data = new T();
+
+                return data;
+            }
+
+            public static void Save<T>(string filePath, T data)
+            {
+                Interface.Oxide.DataFileSystem.WriteObject<T>(filePath, data);
+            }
+
+            public static void Delete(string filePath)
+            {
+                Interface.Oxide.DataFileSystem.DeleteDataFile(filePath);
+            }
+        }
+
+        #endregion Helper Classess
 
         #region Localization
 
         private class Lang
         {
-            public const string NoPermission = "NoPermission";
-            public const string GesturePlayedOnNewNPC = "GesturePlayedOnNewNPC";
-            public const string GestureUpdatedOnExistingNPC = "GestureUpdatedOnExistingNPC";
-            public const string GestureNotFound = "GestureNotFound";
+            public const string Error_NoPermission = "Error.NoPermission";
+            public const string Info_GesturePlayedOnNewNPC = "Info.GesturePlayedOnNewNPC";
+            public const string Info_GestureUpdatedOnExistingNPC = "Info.GestureUpdatedOnExistingNPC";
+            public const string Error_GestureNotFound = "Error.GestureNotFound";
+            public const string Error_NoNPCInSight = "Error.NoNPCInSight";
+            public const string Info_NPCRemoved = "Info.NPCRemoved";
+            public const string Info_AllNPCsRemoved = "Info.AllNPCsRemoved";
+            public const string Error_NoNPCsToRemove = "Error.NoNPCsToRemove";
+            public const string Info_HelpHeader = "Info.HelpHeader";
+            public const string Info_HelpUsageBase = "Info.HelpUsageBase";
+            public const string Info_HelpUsageGesture = "Info.HelpUsageGesture";
+            public const string Info_HelpUsageRemove = "Info.HelpUsageRemove";
+            public const string Info_HelpUsageClear = "Info.HelpUsageClear";
+            public const string Info_HelpUsageGestures = "Info.HelpUsageGestures";
+            public const string Info_HelpUsageGear = "Info.HelpUsageGear";
+            public const string Info_ConfigGestures = "Info.ConfigGestures";
+            public const string Info_ConfigGearSets = "Info.ConfigGearSets";
+            public const string Error_NoGesturesInConfig = "Error.NoGesturesInConfig";
+            public const string Error_NoGearSetsInConfig = "Error.NoGearSetsInConfig";
         }
 
         protected override void LoadDefaultMessages()
         {
             lang.RegisterMessages(new Dictionary<string, string>
             {
-                [Lang.NoPermission] = "You do not have permission to use this command.",
-                [Lang.GesturePlayedOnNewNPC] = "Spawned a new npc and played gesture <color=#CACF52>{0}</color>.",
-                [Lang.GestureUpdatedOnExistingNPC] = "Updated gesture to <color=#CACF52>{0}</color> on the existing npc.",
-                [Lang.GestureNotFound] = "Gesture <color=#75A838>{0}</color> not found. Please specify a valid gesture.",
+                [Lang.Error_NoPermission] = "You do not have permission to use this command.",
+                [Lang.Info_GesturePlayedOnNewNPC] = "Spawned a new dancing npc and started gesture '{0}'.",
+                [Lang.Info_GestureUpdatedOnExistingNPC] = "Updated the npc's gesture to '{0}'.",
+                [Lang.Error_GestureNotFound] = "Gesture '{0}' was not found. Please specify a valid gesture name.",
+                [Lang.Error_NoNPCInSight] = "No dancing npc found. Look directly at one that belongs to you and try again.",
+                [Lang.Info_NPCRemoved] = "Removed the selected dancing npc.",
+                [Lang.Info_AllNPCsRemoved] = "Removed all of your dancing npcs.",
+                [Lang.Error_NoNPCsToRemove] = "You do not have any active dancing npcs to remove.",
+                [Lang.Info_HelpHeader] = "Dancing NPC command usage ({0}):",
+                [Lang.Info_HelpUsageBase] = "{0} - Spawn or update a dancing npc with a random gesture and gear set.",
+                [Lang.Info_HelpUsageGesture] = "{0} <gesture> [gear set] - Spawn or update using a specific gesture and optional gear set.",
+                [Lang.Info_HelpUsageRemove] = "{0} remove - Remove the dancing npc you are currently looking at.",
+                [Lang.Info_HelpUsageClear] = "{0} clear - Remove all dancing npcs that belong to you.",
+                [Lang.Info_HelpUsageGestures] = "{0} gestures - Show the list of configured gesture names.",
+                [Lang.Info_HelpUsageGear] = "{0} gear - Show the list of configured gear set names.",
+                [Lang.Info_ConfigGestures] = "Configured gestures: {0}",
+                [Lang.Info_ConfigGearSets] = "Configured gear sets: {0}",
+                [Lang.Error_NoGesturesInConfig] = "No gestures are configured. Please add gesture names to the plugin configuration.",
+                [Lang.Error_NoGearSetsInConfig] = "No gear sets are configured. Please add gear set names to the plugin configuration."
             }, this, "en");
         }
 
         private static string GetMessage(BasePlayer player, string messageKey, params object[] args)
         {
-            string message = _plugin.lang.GetMessage(messageKey, _plugin, player.UserIDString);
+            string userId;
 
-            if (args.Length > 0)
+            if (player != null)
+                userId = player.UserIDString;
+            else
+                userId = null;
+
+            string message = _plugin.lang.GetMessage(messageKey, _plugin, userId);
+
+            if (args != null && args.Length > 0)
                 message = string.Format(message, args);
 
             return message;
         }
 
-        public static void MessagePlayer(BasePlayer player, string messageKey, params object[] args)
+        public static void ReplyToPlayer(BasePlayer player, string messageKey, params object[] args)
         {
             string message = GetMessage(player, messageKey, args);
-            _plugin.SendReply(player, message);
+
+            if (!string.IsNullOrWhiteSpace(message))
+                _plugin.SendReply(player, message);
         }
 
         #endregion Localization
