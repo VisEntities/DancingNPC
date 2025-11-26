@@ -15,7 +15,7 @@ using UnityEngine;
 
 namespace Oxide.Plugins
 {
-    [Info("Dancing NPC", "VisEntities", "1.4.0")]
+    [Info("Dancing NPC", "VisEntities", "1.4.1")]
     [Description("Allows players to spawn an npc that performs various dance gestures.")]
     public class DancingNPC : RustPlugin
     {
@@ -597,6 +597,13 @@ namespace Oxide.Plugins
 
             GearCoreUtil.EquipGearSet(targetNpcPlayer, gearSetName);
             FaceNPCTowardsPlayer(targetNpcPlayer, player);
+
+            if (npcData != null)
+            {
+                npcData.GearSetName = gearSetName;
+                SaveData();
+            }
+
             ReplyToPlayer(player, Lang.Info_GearSetUpdatedOnExistingNPC, gearSetName);
         }
 
